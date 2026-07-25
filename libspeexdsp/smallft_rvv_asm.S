@@ -983,6 +983,36 @@ spx_drft_rvv_radb2_f32:
     ret
     .size spx_drft_rvv_radb2_f32, . - spx_drft_rvv_radb2_f32
 
+/* ================================================================== */
+/* void spx_drft_rvv_scale_f32(float *out, const float *in,
+ *                             const float *scale, int n)
+ *
+ * out[i] = *scale * in[i] -- fftwrap.c's forward-FFT 1/n pre-scale.
+ * out may equal in (the warned in-place spx_fft path). scale comes by
+ * reference so the file stays float-ABI-neutral. One rounding per
+ * element, same as the scalar loop, so results are bit-exact.        */
+/* ================================================================== */
+    .balign 4
+    .globl  spx_drft_rvv_scale_f32
+    .hidden spx_drft_rvv_scale_f32
+    .type   spx_drft_rvv_scale_f32, @function
+spx_drft_rvv_scale_f32:
+    lw      t0, (a2)
+    vsetvli t1, zero, e32, m8, ta, ma
+    vmv.v.x v8, t0                 /* every strip's vl <= this VLMAX grant */
+.Lsc_loop:
+    vsetvli t1, a3, e32, m8, ta, ma
+    vle32.v v16, (a1)
+    sub     a3, a3, t1
+    slli    t2, t1, 2
+    add     a1, a1, t2
+    vfmul.vv v16, v16, v8
+    vse32.v v16, (a0)
+    add     a0, a0, t2
+    bnez    a3, .Lsc_loop
+    ret
+    .size spx_drft_rvv_scale_f32, . - spx_drft_rvv_scale_f32
+
 #if defined(__ELF__)
 /* Non-executable stack note */
     .section .note.GNU-stack, "", @progbits

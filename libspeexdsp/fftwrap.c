@@ -81,6 +81,10 @@ static void renorm_range(spx_word16_t *in, spx_word16_t *out, int shift, int len
 #include "smallft.h"
 #include <math.h>
 
+#ifdef USE_RVV
+#include "fftwrap_rvv.h"
+#endif
+
 void *spx_fft_init(int size)
 {
    struct drft_lookup *table;
@@ -99,11 +103,19 @@ void spx_fft(void *table, float *in, float *out)
 {
    const int N = ((struct drft_lookup *)table)->n;
    float scale = 1./N;
-   int i;
    if (in==out)
       speex_warning("FFT should not be done in-place");
-   for (i=0;i<N;i++)
-      out[i] = scale*in[i];
+#ifdef USE_RVV
+   if (spx_drft_rvv_enabled)
+   {
+      spx_drft_rvv_scale_f32(out, in, &scale, N);
+   } else
+#endif
+   {
+      int i;
+      for (i=0;i<N;i++)
+         out[i] = scale*in[i];
+   }
    spx_drft_forward((struct drft_lookup *)table, out);
 }
 
