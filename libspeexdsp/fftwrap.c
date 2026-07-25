@@ -97,32 +97,22 @@ void spx_fft_destroy(void *table)
 
 void spx_fft(void *table, float *in, float *out)
 {
+   const int N = ((struct drft_lookup *)table)->n;
+   float scale = 1./N;
+   int i;
    if (in==out)
-   {
-      int i;
-      float scale = 1./((struct drft_lookup *)table)->n;
       speex_warning("FFT should not be done in-place");
-      for (i=0;i<((struct drft_lookup *)table)->n;i++)
-         out[i] = scale*in[i];
-   } else {
-      int i;
-      float scale = 1./((struct drft_lookup *)table)->n;
-      for (i=0;i<((struct drft_lookup *)table)->n;i++)
-         out[i] = scale*in[i];
-   }
+   for (i=0;i<N;i++)
+      out[i] = scale*in[i];
    spx_drft_forward((struct drft_lookup *)table, out);
 }
 
 void spx_ifft(void *table, float *in, float *out)
 {
    if (in==out)
-   {
       speex_warning("FFT should not be done in-place");
-   } else {
-      int i;
-      for (i=0;i<((struct drft_lookup *)table)->n;i++)
-         out[i] = in[i];
-   }
+   else
+      SPEEX_COPY(out, in, ((struct drft_lookup *)table)->n);
    spx_drft_backward((struct drft_lookup *)table, out);
 }
 
