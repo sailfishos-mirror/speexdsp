@@ -104,3 +104,13 @@ void smallft_forward_c(struct drft_lookup *l, const struct drft_stage *st,
     else
         spx_drft_forward(l, data);
 }
+
+/* ------------- fftwrap.c's forward-FFT pre-scale, C baseline -------------
+ * Kept in this no-autovec TU so the fftwrap_scale benchmark compares the
+ * RVV kernel against genuinely scalar code. */
+void fftwrap_scale_c(float *out, const float *in, const float *scale, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        out[i] = *scale * in[i];
+}

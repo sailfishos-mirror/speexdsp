@@ -24,6 +24,9 @@ static const CheckasmTest tests[] = {
     /* whole-transform integration benchmark */
     { "smallft_transform", checkasm_check_smallft_transform },
 
+    /* fftwrap's forward-FFT 1/n pre-scale loop */
+    { "fftwrap_scale", checkasm_check_fftwrap_scale },
+
     { 0 }
 };
 

@@ -50,6 +50,12 @@ void smallft_forward_rvv(struct drft_lookup *l, const struct drft_stage *st,
                          int backward, float *data, float *unused);
 #endif
 
+/* ------------- fftwrap forward-FFT pre-scale -------------
+ * out[i] = *scale * in[i]; C baseline owned by wrap_smallft_c.c (the
+ * no-autovec TU), tested against smallft_rvv_asm.S's
+ * spx_drft_rvv_scale_f32 by checkasm/fftwrap/fftwrap_scale.c. */
+void fftwrap_scale_c(float *out, const float *in, const float *scale, int n);
+
 /* ------------- Test-input fill ------------- */
 #include <checkasm/utils.h>
 

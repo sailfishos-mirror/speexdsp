@@ -15,6 +15,7 @@ checkasm_sources = files(
     'checkasm/fft/fft_transform.c',
     'checkasm/mdf/mdf_kernels.c',
     'checkasm/smallft/smallft_drft.c',
+    'checkasm/fftwrap/fftwrap_scale.c',
 )
 
 # The C-reference TU is the scalar baseline every benchmark compares against, so
