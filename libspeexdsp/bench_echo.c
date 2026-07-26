@@ -1,8 +1,9 @@
-/* bench_echo.c: end-to-end benchmark of the public echo-canceller API
- * (speex_echo_*).  Toggles every runtime RVV dispatch flag the build
- * carries (kiss_fft or smallft butterflies, and the mdf spectral
- * kernels) between timed passes so one binary measures the whole-API
- * impact of the RVV kernels.
+/* bench_echo.c: end-to-end benchmark of the public echo-canceller +
+ * preprocessor pipeline (speex_echo_* followed by speex_preprocess_run,
+ * as a voice pipeline would chain them).  Toggles every runtime RVV
+ * dispatch flag the build carries (kiss_fft or smallft butterflies, the
+ * mdf spectral kernels and the preprocess per-bin kernels) between timed
+ * passes so one binary measures the whole-API impact of the RVV kernels.
  *
  * Needs an optimized build to be meaningful (e.g. meson --buildtype=release);
  * float builds exercise smallft by default, -Dfft=kiss the kiss kernels.
@@ -13,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <speex/speex_echo.h>
+#include <speex/speex_preprocess.h>
 
 /* Runtime kill-switches for the RVV kernels; each is only present in
  * builds with runtime dispatch for that module (the FFT flag depends on
@@ -20,17 +22,19 @@
  * weak so the bench links everywhere.  When none resolve, the A/B
  * comparison degrades to a single absolute-timing pass. */
 #if defined(__GNUC__)
-extern int spx_kf_rvv_enabled __attribute__((weak));     /* kiss_fft */
-extern int spx_drft_rvv_enabled __attribute__((weak));   /* smallft */
-extern int spx_mdf_rvv_enabled __attribute__((weak));    /* mdf */
-#define N_RVV_FLAGS 3
+extern int spx_kf_rvv_enabled __attribute__((weak));      /* kiss_fft */
+extern int spx_drft_rvv_enabled __attribute__((weak));    /* smallft */
+extern int spx_mdf_rvv_enabled __attribute__((weak));     /* mdf */
+extern int spx_preproc_rvv_enabled __attribute__((weak)); /* preprocess */
+#define N_RVV_FLAGS 4
 static int *const rvv_flags[N_RVV_FLAGS] =
-    { &spx_kf_rvv_enabled, &spx_drft_rvv_enabled, &spx_mdf_rvv_enabled };
+    { &spx_kf_rvv_enabled, &spx_drft_rvv_enabled, &spx_mdf_rvv_enabled,
+      &spx_preproc_rvv_enabled };
 static const char *const rvv_flag_names[N_RVV_FLAGS] =
-    { "kiss_fft", "smallft", "mdf" };
+    { "kiss_fft", "smallft", "mdf", "preprocess" };
 #define HAVE_RVV_TOGGLE \
     (&spx_kf_rvv_enabled != NULL || &spx_drft_rvv_enabled != NULL || \
-     &spx_mdf_rvv_enabled != NULL)
+     &spx_mdf_rvv_enabled != NULL || &spx_preproc_rvv_enabled != NULL)
 #else
 #define N_RVV_FLAGS 0
 static int *const rvv_flags[1] = { 0 };
@@ -94,6 +98,8 @@ static double run_pass(const bench_cfg *c, int frames)
    SpeexEchoState *st = speex_echo_state_init(c->frame, c->tail);
    int rate = c->rate;
    speex_echo_ctl(st, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
+   SpeexPreprocessState *den = speex_preprocess_state_init(c->frame, c->rate);
+   speex_preprocess_ctl(den, SPEEX_PREPROCESS_SET_ECHO_STATE, st);
 
    int hist_len = c->frame*4;
    spx_int16_t *play = malloc(sizeof(*play)*c->frame);
@@ -116,10 +122,12 @@ static double run_pass(const bench_cfg *c, int frames)
          hpos = (hpos + 1) % hist_len;
       }
       speex_echo_cancellation(st, rec, play, out);
+      speex_preprocess_run(den, out);
    }
    double dt = now_sec() - t0;
 
    free(play); free(rec); free(out); free(hist);
+   speex_preprocess_state_destroy(den);
    speex_echo_state_destroy(st);
    return dt/frames;
 }
@@ -138,6 +146,8 @@ int main(int argc, char **argv)
       /* the hwcap probes run once, inside the first echo-state init;
        * trigger them now so later writes to the flags stick */
       SpeexEchoState *probe = speex_echo_state_init(128, 1024);
+      SpeexPreprocessState *dprobe = speex_preprocess_state_init(128, 8000);
+      speex_preprocess_state_destroy(dprobe);
       speex_echo_state_destroy(probe);
       rvv_avail = rvv_any_enabled();
       printf("RVV kernel sets in this build:");
@@ -171,7 +181,7 @@ int main(int argc, char **argv)
                 1e6*best_off, frame_ms/(1000.0*best_off));
          printf("  RVV:    %8.1f us/frame  (%.1fx realtime)\n",
                 1e6*best_on, frame_ms/(1000.0*best_on));
-         printf("  speedup: %.3fx  (%.1f%% of echo-cancel time saved)\n\n",
+         printf("  speedup: %.3fx  (%.1f%% of pipeline time saved)\n\n",
                 best_off/best_on, 100.0*(best_off-best_on)/best_off);
       } else {
          printf("  %8.1f us/frame  (%.1fx realtime)\n\n",
