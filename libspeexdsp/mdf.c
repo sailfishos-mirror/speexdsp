@@ -252,6 +252,26 @@ static inline spx_word32_t mdf_inner_prod(const spx_word16_t *x, const spx_word1
 }
 #endif
 
+/** Windowed copy of the last output, for the residual-echo estimate */
+#ifndef OVERRIDE_MDF_RESIDUAL_WINDOW
+static inline void mdf_residual_window(spx_word16_t *y, const spx_word16_t *window, const spx_word16_t *last_y, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+      y[i] = MULT16_16_Q15(window[i], last_y[i]);
+}
+#endif
+
+/** Scale the residual-echo spectrum by the leak estimate */
+#ifndef OVERRIDE_MDF_RESIDUAL_SCALE
+static inline void mdf_residual_scale(spx_word32_t *residual_echo, spx_word16_t leak2, int len)
+{
+   int i;
+   for (i=0;i<len;i++)
+      residual_echo[i] = (spx_int32_t)MULT16_32_Q15(leak2,residual_echo[i]);
+}
+#endif
+
 /** Compute power spectrum of a half-complex (packed) vector */
 #ifndef OVERRIDE_MDF_POWER_SPECTRUM
 static inline void power_spectrum(const spx_word16_t *X, spx_word32_t *ps, int N)
@@ -1237,15 +1257,13 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
 /* Compute spectrum of estimated echo for use in an echo post-filter */
 void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *residual_echo, int len)
 {
-   int i;
    spx_word16_t leak2;
    int N;
 
    N = st->window_size;
 
    /* Apply hanning window (should pre-compute it)*/
-   for (i=0;i<N;i++)
-      st->y[i] = MULT16_16_Q15(st->window[i],st->last_y[i]);
+   mdf_residual_window(st->y, st->window, st->last_y, N);
 
    /* Compute power spectrum of the echo */
    spx_fft(st->fft_table, st->y, st->Y);
@@ -1263,8 +1281,7 @@ void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *residual_echo, in
       leak2 = 2*st->leak_estimate;
 #endif
    /* Estimate residual echo */
-   for (i=0;i<=st->frame_size;i++)
-      residual_echo[i] = (spx_int32_t)MULT16_32_Q15(leak2,residual_echo[i]);
+   mdf_residual_scale(residual_echo, leak2, st->frame_size+1);
 
 }
 

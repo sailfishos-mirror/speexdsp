@@ -54,4 +54,15 @@ void mdf_adjust_prop_rvv(const spx_word32_t *W, int N, int M, int P,
     mdf_adjust_prop(W, N, M, P, prop);
 }
 
+void mdf_res_window_rvv(spx_word16_t *y, const spx_word16_t *window,
+                        const spx_word16_t *last_y, int N)
+{
+    mdf_residual_window(y, window, last_y, N);
+}
+
+void mdf_res_scale_rvv(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len)
+{
+    mdf_residual_scale(residual_echo, *leak2, len);
+}
+
 #endif /* HAVE_RVV_MDF */

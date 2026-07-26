@@ -36,6 +36,10 @@ void mdf_power_spectrum_accum_c(const spx_word16_t *X, spx_word32_t *ps, int N);
 spx_word32_t mdf_inner_prod_c(const spx_word16_t *x, const spx_word16_t *y, int len);
 void mdf_adjust_prop_c(const spx_word32_t *W, int N, int M, int P,
                        spx_word16_t *prop);
+void mdf_res_window_c(spx_word16_t *y, const spx_word16_t *window,
+                      const spx_word16_t *last_y, int N);
+/* leak2 by pointer, same convention as wsmul's p */
+void mdf_res_scale_c(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len);
 
 #ifdef HAVE_RVV_MDF
 void mdf_smul_accum_rvv(const spx_word16_t *X, const spx_word32_t *Y,
@@ -50,6 +54,9 @@ void mdf_power_spectrum_accum_rvv(const spx_word16_t *X, spx_word32_t *ps, int N
 spx_word32_t mdf_inner_prod_rvv(const spx_word16_t *x, const spx_word16_t *y, int len);
 void mdf_adjust_prop_rvv(const spx_word32_t *W, int N, int M, int P,
                          spx_word16_t *prop);
+void mdf_res_window_rvv(spx_word16_t *y, const spx_word16_t *window,
+                        const spx_word16_t *last_y, int N);
+void mdf_res_scale_rvv(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len);
 #endif
 
 /* ------------- Test-input fill ------------- */

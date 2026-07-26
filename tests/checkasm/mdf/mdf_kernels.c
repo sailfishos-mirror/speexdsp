@@ -240,6 +240,92 @@ static void test_mdf_adjust_prop(void)
     checkasm_report("mdf_adjust_prop");
 }
 
+/* speex_echo_get_residual's two elementwise loops. One multiply per
+ * element in both builds, so C and RVV must match bit for bit (float
+ * included: a single vfmul rounds identically to the scalar multiply). */
+static void test_mdf_res_window(void)
+{
+    checkasm_declare(void, spx_word16_t *, const spx_word16_t *,
+                     const spx_word16_t *, int);
+
+    static const int sizes[] = { 129, 256, 320, 512, 960 };
+    CHECKASM_ALIGN(spx_word16_t window[960]);
+    CHECKASM_ALIGN(spx_word16_t last_y[960]);
+    CHECKASM_ALIGN(spx_word16_t y_ref[960]);
+    CHECKASM_ALIGN(spx_word16_t y_new[960]);
+
+    for (size_t c = 0; c < sizeof(sizes) / sizeof(sizes[0]); c++) {
+        const int N = sizes[c];
+
+        mdf_fill_w16(window, N);
+        mdf_fill_w16(last_y, N);
+        /* different garbage in the outputs so a skipped lane is caught */
+        mdf_fill_w16(y_ref, N);
+        mdf_fill_w16(y_new, N);
+
+        if (checkasm_check_func(mdf_res_window_c, "mdf_res_window_%d", N))
+            checkasm_bench_new(y_new, window, last_y, N);
+
+        if (active_flags & SPEEXDSP_CPU_FLAG_RVV) {
+            if (checkasm_check_func(mdf_res_window_rvv, "mdf_res_window_%d", N)) {
+                checkasm_call_ref(y_ref, window, last_y, N);
+                checkasm_call_new(y_new, window, last_y, N);
+                if (!mdf_buf16_matches(y_ref, y_new, N, 0.0))
+                    checkasm_fail();
+                checkasm_bench_new(y_new, window, last_y, N);
+            }
+        }
+    }
+
+    checkasm_report("mdf_res_window");
+}
+
+static void test_mdf_res_scale(void)
+{
+    checkasm_declare(void, spx_word32_t *, const spx_word16_t *, int);
+
+    static const int lens[] = { 65, 129, 241, 257 };
+    CHECKASM_ALIGN(spx_word32_t res_base[257]);
+    CHECKASM_ALIGN(spx_word32_t res_ref[257]);
+    CHECKASM_ALIGN(spx_word32_t res_new[257]);
+    spx_word16_t leak2;
+
+    for (size_t c = 0; c < sizeof(lens) / sizeof(lens[0]); c++) {
+        const int len = lens[c];
+
+        mdf_fill_w32(res_base, len);
+#ifdef FIXED_POINT
+        leak2 = checkasm_rand() & 0x7fff;
+#else
+        /* residual_echo holds power-spectrum magnitudes, and the C loop
+         * truncates through an int32 cast -- scale the fill so the
+         * truncation is exercised on non-zero values */
+        for (int i = 0; i < len; i++)
+            res_base[i] *= 1e6f;
+        leak2 = 0.7f;
+#endif
+
+        if (checkasm_check_func(mdf_res_scale_c, "mdf_res_scale_%d", len)) {
+            memcpy(res_new, res_base, len * sizeof *res_new);
+            checkasm_bench_new(res_new, &leak2, len);
+        }
+
+        if (active_flags & SPEEXDSP_CPU_FLAG_RVV) {
+            if (checkasm_check_func(mdf_res_scale_rvv, "mdf_res_scale_%d", len)) {
+                memcpy(res_ref, res_base, len * sizeof *res_ref);
+                memcpy(res_new, res_base, len * sizeof *res_new);
+                checkasm_call_ref(res_ref, &leak2, len);
+                checkasm_call_new(res_new, &leak2, len);
+                if (!mdf_buf32_matches(res_ref, res_new, len, 0.0))
+                    checkasm_fail();
+                checkasm_bench_new(res_new, &leak2, len);
+            }
+        }
+    }
+
+    checkasm_report("mdf_res_scale");
+}
+
 #endif /* HAVE_RVV_MDF */
 
 void checkasm_check_mdf_kernels(void)
@@ -254,5 +340,7 @@ void checkasm_check_mdf_kernels(void)
     test_mdf_power_spectrum();
     test_mdf_inner_prod();
     test_mdf_adjust_prop();
+    test_mdf_res_window();
+    test_mdf_res_scale();
 #endif /* HAVE_RVV_MDF */
 }

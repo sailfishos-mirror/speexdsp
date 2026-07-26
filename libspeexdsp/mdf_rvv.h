@@ -69,6 +69,9 @@ void spx_mdf_rvv_smul_accum_i16(const spx_int16_t *X, const spx_int32_t *Y,
 void spx_mdf_rvv_smul_accum16_i16(const spx_int16_t *X, const spx_int16_t *Y,
                                   spx_int16_t *acc, int N, int M, int shift);
 void spx_mdf_rvv_power_spectrum_i16(const spx_int16_t *X, spx_int32_t *ps, int N);
+void spx_mdf_rvv_res_window_i16(spx_int16_t *y, const spx_int16_t *window,
+                                const spx_int16_t *last_y, int N);
+void spx_mdf_rvv_res_scale_i32(spx_int32_t *residual_echo, int leak2, int len);
 void spx_mdf_rvv_power_spectrum_accum_i16(const spx_int16_t *X, spx_int32_t *ps, int N);
 spx_int32_t spx_mdf_rvv_inner_prod_i16(const spx_int16_t *x, const spx_int16_t *y,
                                        int len, int shift);
@@ -154,6 +157,32 @@ static inline void spectral_mul_accum16(const spx_word16_t *X, const spx_word16_
       tmp1 = MAC16_16(tmp1, X[(j+1)*N-1],Y[(j+1)*N-1]);
    }
    acc[N-1] = PSHR32(tmp1,WEIGHT_SHIFT);
+}
+
+#define OVERRIDE_MDF_RESIDUAL_WINDOW
+static inline void mdf_residual_window(spx_word16_t *y, const spx_word16_t *window, const spx_word16_t *last_y, int N)
+{
+   int i;
+   if (SPX_MDF_RVV_ON && N >= 4)
+   {
+      spx_mdf_rvv_res_window_i16(y, window, last_y, N);
+      return;
+   }
+   for (i=0;i<N;i++)
+      y[i] = MULT16_16_Q15(window[i], last_y[i]);
+}
+
+#define OVERRIDE_MDF_RESIDUAL_SCALE
+static inline void mdf_residual_scale(spx_word32_t *residual_echo, spx_word16_t leak2, int len)
+{
+   int i;
+   if (SPX_MDF_RVV_ON && len >= 4)
+   {
+      spx_mdf_rvv_res_scale_i32(residual_echo, leak2, len);
+      return;
+   }
+   for (i=0;i<len;i++)
+      residual_echo[i] = (spx_int32_t)MULT16_32_Q15(leak2,residual_echo[i]);
 }
 
 #define OVERRIDE_MDF_POWER_SPECTRUM
@@ -255,6 +284,9 @@ void  spx_mdf_rvv_smul_accum_f32(const float *X, const float *Y, float *acc,
 void  spx_mdf_rvv_wsmul_conj_f32(const float *w, const float *X, const float *Y,
                                  float *prod, int N, float p);
 void  spx_mdf_rvv_power_spectrum_f32(const float *X, float *ps, int N);
+void  spx_mdf_rvv_res_window_f32(float *y, const float *window,
+                                 const float *last_y, int N);
+void  spx_mdf_rvv_res_scale_f32(float *residual_echo, float leak2, int len);
 void  spx_mdf_rvv_power_spectrum_accum_f32(const float *X, float *ps, int N);
 float spx_mdf_rvv_inner_prod_f32(const float *x, const float *y, int len);
 
@@ -313,6 +345,32 @@ static inline void weighted_spectral_mul_conj(const spx_float_t *w, const spx_fl
    }
    W = FLOAT_AMULT(p, w[j]);
    prod[i] = FLOAT_MUL32(W,MULT16_16(X[i],Y[i]));
+}
+
+#define OVERRIDE_MDF_RESIDUAL_WINDOW
+static inline void mdf_residual_window(spx_word16_t *y, const spx_word16_t *window, const spx_word16_t *last_y, int N)
+{
+   int i;
+   if (SPX_MDF_RVV_ON && N >= 4)
+   {
+      spx_mdf_rvv_res_window_f32(y, window, last_y, N);
+      return;
+   }
+   for (i=0;i<N;i++)
+      y[i] = MULT16_16_Q15(window[i], last_y[i]);
+}
+
+#define OVERRIDE_MDF_RESIDUAL_SCALE
+static inline void mdf_residual_scale(spx_word32_t *residual_echo, spx_word16_t leak2, int len)
+{
+   int i;
+   if (SPX_MDF_RVV_ON && len >= 4)
+   {
+      spx_mdf_rvv_res_scale_f32(residual_echo, leak2, len);
+      return;
+   }
+   for (i=0;i<len;i++)
+      residual_echo[i] = (spx_int32_t)MULT16_32_Q15(leak2,residual_echo[i]);
 }
 
 #define OVERRIDE_MDF_POWER_SPECTRUM

@@ -438,6 +438,114 @@ spx_mdf_rvv_prop_sumsq_i16:
     ret
     .size spx_mdf_rvv_prop_sumsq_i16, . - spx_mdf_rvv_prop_sumsq_i16
 
+/* ================================================================== */
+/*             speex_echo_get_residual elementwise kernels            */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* void spx_mdf_rvv_res_window_f32(float *y, const float *window,
+ *                                 const float *last_y, int N)
+ * y[i] = window[i]*last_y[i] -- Hanning window before the residual FFT.
+ * One multiply per element: bit-exact vs the scalar loop. */
+    .balign 4
+    .globl  spx_mdf_rvv_res_window_f32
+    .hidden spx_mdf_rvv_res_window_f32
+    .type   spx_mdf_rvv_res_window_f32, @function
+spx_mdf_rvv_res_window_f32:
+1:  vsetvli t0, a3, e32, m8, ta, ma
+    vle32.v v8, (a1)
+    vle32.v v16, (a2)
+    vfmul.vv v8, v8, v16
+    vse32.v v8, (a0)
+    sub     a3, a3, t0
+    slli    t1, t0, 2
+    add     a0, a0, t1
+    add     a1, a1, t1
+    add     a2, a2, t1
+    bnez    a3, 1b
+    ret
+    .size spx_mdf_rvv_res_window_f32, . - spx_mdf_rvv_res_window_f32
+
+/* ------------------------------------------------------------------ */
+/* void spx_mdf_rvv_res_scale_f32(float *residual_echo, float leak2,
+ *                                int len)
+ * residual_echo[i] = (spx_int32_t)(leak2*residual_echo[i]): the C loop
+ * truncates the product through an int32 cast even in float builds, so
+ * round-trip through vfcvt.rtz (same saturating fcvt semantics the
+ * scalar cast compiles to). Bit-exact vs the scalar loop. */
+    .balign 4
+    .globl  spx_mdf_rvv_res_scale_f32
+    .hidden spx_mdf_rvv_res_scale_f32
+    .type   spx_mdf_rvv_res_scale_f32, @function
+spx_mdf_rvv_res_scale_f32:
+1:  vsetvli t0, a1, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    vfmul.vf v8, v8, fa0
+    vfcvt.rtz.x.f.v v8, v8
+    vfcvt.f.x.v v8, v8
+    vse32.v v8, (a0)
+    sub     a1, a1, t0
+    slli    t1, t0, 2
+    add     a0, a0, t1
+    bnez    a1, 1b
+    ret
+    .size spx_mdf_rvv_res_scale_f32, . - spx_mdf_rvv_res_scale_f32
+
+/* ------------------------------------------------------------------ */
+/* void spx_mdf_rvv_res_window_i16(spx_int16_t *y, const spx_int16_t *window,
+ *                                 const spx_int16_t *last_y, int N)
+ * y[i] = MULT16_16_Q15(window[i], last_y[i]): exact e16xe16->e32 product,
+ * truncating >>15 narrow (== the C int16 cast). Bit-exact. */
+    .balign 4
+    .globl  spx_mdf_rvv_res_window_i16
+    .hidden spx_mdf_rvv_res_window_i16
+    .type   spx_mdf_rvv_res_window_i16, @function
+spx_mdf_rvv_res_window_i16:
+1:  vsetvli t0, a3, e16, m4, ta, ma
+    vle16.v v4, (a1)
+    vle16.v v8, (a2)
+    vwmul.vv v16, v4, v8           /* e32m8 */
+    vnsra.wi v4, v16, 15
+    vse16.v v4, (a0)
+    sub     a3, a3, t0
+    slli    t1, t0, 1
+    add     a0, a0, t1
+    add     a1, a1, t1
+    add     a2, a2, t1
+    bnez    a3, 1b
+    ret
+    .size spx_mdf_rvv_res_window_i16, . - spx_mdf_rvv_res_window_i16
+
+/* ------------------------------------------------------------------ */
+/* void spx_mdf_rvv_res_scale_i32(spx_int32_t *residual_echo, int leak2,
+ *                                int len)
+ * residual_echo[i] = MULT16_32_Q15(leak2, residual_echo[i])
+ *                  = leak2*(r>>15) + ((leak2*(r&0x7fff))>>15)
+ * leak2*(r>>15) wraps mod 2^32 like the C int32 product; the low half
+ * (|leak2| <= 32767, r&0x7fff < 2^15) never exceeds 30 bits, so both
+ * terms and their sum replicate the scalar arithmetic bit for bit. */
+    .balign 4
+    .globl  spx_mdf_rvv_res_scale_i32
+    .hidden spx_mdf_rvv_res_scale_i32
+    .type   spx_mdf_rvv_res_scale_i32, @function
+spx_mdf_rvv_res_scale_i32:
+    li      t2, 0x7fff
+1:  vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    vsra.vi v16, v8, 15            /* r >> 15 */
+    vmul.vx v16, v16, a1           /* leak2*(r>>15), wrapping */
+    vand.vx v8, v8, t2             /* r & 0x7fff */
+    vmul.vx v8, v8, a1
+    vsra.vi v8, v8, 15
+    vadd.vv v8, v8, v16
+    vse32.v v8, (a0)
+    sub     a2, a2, t0
+    slli    t1, t0, 2
+    add     a0, a0, t1
+    bnez    a2, 1b
+    ret
+    .size spx_mdf_rvv_res_scale_i32, . - spx_mdf_rvv_res_scale_i32
+
 #if defined(__ELF__)
 /* Non-executable stack note */
     .section .note.GNU-stack, "", @progbits
