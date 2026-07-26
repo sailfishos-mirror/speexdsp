@@ -388,12 +388,238 @@ static void compute_gain_floor(int noise_suppress, int effective_echo_suppress, 
 }
 
 #endif
+
+#ifdef USE_RVV
+#include "preprocess_rvv.h"
+#endif
+
+#ifdef PREPROC_RVV_RUNTIME
+#if defined(__linux__)
+#include <sys/auxv.h>
+#endif
+int spx_preproc_rvv_enabled = 0;
+static void preproc_detect_rvv(void)
+{
+   static int rvv_probed = 0;
+   if (rvv_probed)
+      return;
+#if defined(__linux__)
+   /* 'V' HWCAP bit, then reject draft RVV 0.7.1 hardware (which also sets it)
+      via the vtype/VILL probe, and require VLEN >= 128 (the kernels'
+      precondition; V mandates Zvl128b, but verify it directly). */
+   if (getauxval(AT_HWCAP) & (1UL << ('V' - 'A')))
+      spx_preproc_rvv_enabled = spx_preproc_rvv_compliant()
+                             && spx_preproc_rvv_vlenb() >= 16;
+#endif
+   rvv_probed = 1;
+}
+#endif /* PREPROC_RVV_RUNTIME */
+
+/** Multiply a frame elementwise by the analysis/synthesis window */
+#ifndef OVERRIDE_PREPROC_WINDOW
+static inline void preproc_window(spx_word16_t *frame, const spx_word16_t *window, int len)
+{
+   int i;
+   for (i=0;i<len;i++)
+      frame[i] = MULT16_16_Q15(frame[i], window[i]);
+}
+#endif
+
+/** Power spectrum of the packed FFT of a 2*N frame: ps[0] from the DC bin,
+    ps[1..N-1] from the interior complex bins (the Nyquist bin is unused) */
+#ifndef OVERRIDE_PREPROC_POWER_SPECTRUM
+static inline void preproc_power_spectrum(const spx_word16_t *ft, spx_word32_t *ps, int N)
+{
+   int i;
+   ps[0]=MULT16_16(ft[0],ft[0]);
+   for (i=1;i<N;i++)
+      ps[i]=MULT16_16(ft[2*i-1],ft[2*i-1]) + MULT16_16(ft[2*i],ft[2*i]);
+}
+#endif
+
+/** 3-tap recursive smoothing of the power spectrum (S) */
+#ifndef OVERRIDE_PREPROC_SMOOTH_SPECTRUM
+static inline void preproc_smooth_spectrum(spx_word32_t *S, const spx_word32_t *ps, int N)
+{
+   int i;
+   for (i=1;i<N-1;i++)
+      S[i] =  MULT16_32_Q15(QCONST16(.8f,15),S[i]) + MULT16_32_Q15(QCONST16(.05f,15),ps[i-1])
+                      + MULT16_32_Q15(QCONST16(.1f,15),ps[i]) + MULT16_32_Q15(QCONST16(.05f,15),ps[i+1]);
+   S[0] =  MULT16_32_Q15(QCONST16(.8f,15),S[0]) + MULT16_32_Q15(QCONST16(.2f,15),ps[0]);
+   S[N-1] =  MULT16_32_Q15(QCONST16(.8f,15),S[N-1]) + MULT16_32_Q15(QCONST16(.2f,15),ps[N-1]);
+}
+#endif
+
+/** Minimum statistics tracking, window-restart step */
+#ifndef OVERRIDE_PREPROC_MIN_TRACK_SWAP
+static inline void preproc_min_track_swap(spx_word32_t *Smin, spx_word32_t *Stmp, const spx_word32_t *S, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+   {
+      Smin[i] = MIN32(Stmp[i], S[i]);
+      Stmp[i] = S[i];
+   }
+}
+#endif
+
+/** Minimum statistics tracking, running-min step */
+#ifndef OVERRIDE_PREPROC_MIN_TRACK
+static inline void preproc_min_track(spx_word32_t *Smin, spx_word32_t *Stmp, const spx_word32_t *S, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+   {
+      Smin[i] = MIN32(Smin[i], S[i]);
+      Stmp[i] = MIN32(Stmp[i], S[i]);
+   }
+}
+#endif
+
+/** Per-bin speech presence flag for the noise update: .4*S > Smin */
+#ifndef OVERRIDE_PREPROC_UPDATE_PROB
+static inline void preproc_update_prob(const spx_word32_t *S, const spx_word32_t *Smin, int *update_prob, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+   {
+      if (MULT16_32_Q15(QCONST16(.4f,15),S[i]) > Smin[i])
+         update_prob[i] = 1;
+      else
+         update_prob[i] = 0;
+   }
+}
+#endif
+
+/** Update the noise estimate for the frequencies where it can be */
+#ifndef OVERRIDE_PREPROC_NOISE_UPDATE
+static inline void preproc_noise_update(const int *update_prob, const spx_word32_t *ps, spx_word32_t *noise, spx_word16_t beta, spx_word16_t beta_1, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+   {
+      if (!update_prob[i] || ps[i] < PSHR32(noise[i], NOISE_SHIFT))
+         noise[i] = MAX32(EXTEND32(0),MULT16_32_Q15(beta_1,noise[i]) + MULT16_32_Q15(beta,SHL32(ps[i],NOISE_SHIFT)));
+   }
+}
+#endif
+
+/** A posteriori and a priori SNR update */
+#ifndef OVERRIDE_PREPROC_SNR_UPDATE
+static inline void preproc_snr_update(const spx_word32_t *ps, const spx_word32_t *noise, const spx_word32_t *echo_noise, const spx_word32_t *reverb_estimate, const spx_word32_t *old_ps, spx_word16_t *post, spx_word16_t *prior, int len)
+{
+   int i;
+   for (i=0;i<len;i++)
+   {
+      spx_word16_t gamma;
+
+      /* Total noise estimate including residual echo and reverberation */
+      spx_word32_t tot_noise = ADD32(ADD32(ADD32(EXTEND32(1), PSHR32(noise[i],NOISE_SHIFT)) , echo_noise[i]) , reverb_estimate[i]);
+
+      /* A posteriori SNR = ps/noise - 1*/
+      post[i] = SUB16(DIV32_16_Q8(ps[i],tot_noise), QCONST16(1.f,SNR_SHIFT));
+      post[i]=MIN16(post[i], QCONST16(100.f,SNR_SHIFT));
+
+      /* Computing update gamma = .1 + .9*(old/(old+noise))^2 */
+      gamma = QCONST16(.1f,15)+MULT16_16_Q15(QCONST16(.89f,15),SQR16_Q15(DIV32_16_Q15(old_ps[i],ADD32(old_ps[i],tot_noise))));
+
+      /* A priori SNR update = gamma*max(0,post) + (1-gamma)*old/noise */
+      prior[i] = EXTRACT16(PSHR32(ADD32(MULT16_16(gamma,MAX16(0,post[i])), MULT16_16(Q15_ONE-gamma,DIV32_16_Q8(old_ps[i],tot_noise))), 15));
+      prior[i]=MIN16(prior[i], QCONST16(100.f,SNR_SHIFT));
+   }
+}
+#endif
+
+/** Recursive average of the a priori SNR: 3-tap over the psd bins, flat
+    over the filterbank bands */
+#ifndef OVERRIDE_PREPROC_ZETA_SMOOTH
+static inline void preproc_zeta_smooth(spx_word16_t *zeta, const spx_word16_t *prior, int N, int M)
+{
+   int i;
+   zeta[0] = PSHR32(ADD32(MULT16_16(QCONST16(.7f,15),zeta[0]), MULT16_16(QCONST16(.3f,15),prior[0])),15);
+   for (i=1;i<N-1;i++)
+      zeta[i] = PSHR32(ADD32(ADD32(ADD32(MULT16_16(QCONST16(.7f,15),zeta[i]), MULT16_16(QCONST16(.15f,15),prior[i])),
+                           MULT16_16(QCONST16(.075f,15),prior[i-1])), MULT16_16(QCONST16(.075f,15),prior[i+1])),15);
+   for (i=N-1;i<N+M;i++)
+      zeta[i] = PSHR32(ADD32(MULT16_16(QCONST16(.7f,15),zeta[i]), MULT16_16(QCONST16(.3f,15),prior[i])),15);
+}
+#endif
+
+/** Linear-frequency Ephraim-Malah gain and speech probability update */
+#ifndef OVERRIDE_PREPROC_EM_GAIN
+static inline void preproc_em_gain(const spx_word16_t *prior, const spx_word16_t *post, const spx_word32_t *ps, const spx_word16_t *gain_floor, spx_word16_t *gain, spx_word16_t *gain2, spx_word32_t *old_ps, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+   {
+      spx_word32_t MM;
+      spx_word32_t theta;
+      spx_word16_t prior_ratio;
+      spx_word16_t tmp;
+      spx_word16_t p;
+      spx_word16_t g;
+
+      /* Wiener filter gain */
+      prior_ratio = PDIV32_16(SHL32(EXTEND32(prior[i]), 15), ADD16(prior[i], SHL32(1,SNR_SHIFT)));
+      theta = MULT16_32_P15(prior_ratio, QCONST32(1.f,EXPIN_SHIFT)+SHL32(EXTEND32(post[i]),EXPIN_SHIFT-SNR_SHIFT));
+
+      /* Optimal estimator for loudness domain */
+      MM = hypergeom_gain(theta);
+      /* EM gain with bound */
+      g = EXTRACT16(MIN32(Q15_ONE, MULT16_32_Q15(prior_ratio, MM)));
+      /* Interpolated speech probability of presence */
+      p = gain2[i];
+
+      /* Constrain the gain to be close to the Bark scale gain */
+      if (MULT16_16_Q15(QCONST16(.333f,15),g) > gain[i])
+         g = MULT16_16(3,gain[i]);
+      gain[i] = g;
+
+      /* Save old power spectrum */
+      old_ps[i] = MULT16_32_P15(QCONST16(.2f,15),old_ps[i]) + MULT16_32_P15(MULT16_16_P15(QCONST16(.8f,15),SQR16_Q15(gain[i])),ps[i]);
+
+      /* Apply gain floor */
+      if (gain[i] < gain_floor[i])
+         gain[i] = gain_floor[i];
+
+      /* Exponential decay model for reverberation (unused) */
+      /*st->reverb_estimate[i] = st->reverb_decay*st->reverb_estimate[i] + st->reverb_decay*st->reverb_level*st->gain[i]*st->gain[i]*st->ps[i];*/
+
+      /* Take into account speech probability of presence (loudness domain MMSE estimator) */
+      /* gain2 = [p*sqrt(gain)+(1-p)*sqrt(gain _floor) ]^2 */
+      tmp = MULT16_16_P15(p,spx_sqrt(SHL32(EXTEND32(gain[i]),15))) + MULT16_16_P15(SUB16(Q15_ONE,p),spx_sqrt(SHL32(EXTEND32(gain_floor[i]),15)));
+      gain2[i]=SQR16_Q15(tmp);
+
+      /* Use this if you want a log-domain MMSE estimator instead */
+      /*st->gain2[i] = pow(st->gain[i], p) * pow(st->gain_floor[i],1.f-p);*/
+   }
+}
+#endif
+
+/** Apply the computed gain to the packed spectrum */
+#ifndef OVERRIDE_PREPROC_APPLY_GAIN
+static inline void preproc_apply_gain(const spx_word16_t *gain2, spx_word16_t *ft, int N)
+{
+   int i;
+   for (i=1;i<N;i++)
+   {
+      ft[2*i-1] = MULT16_16_P15(gain2[i],ft[2*i-1]);
+      ft[2*i] = MULT16_16_P15(gain2[i],ft[2*i]);
+   }
+   ft[0] = MULT16_16_P15(gain2[0],ft[0]);
+   ft[2*N-1] = MULT16_16_P15(gain2[N-1],ft[2*N-1]);
+}
+#endif
+
 EXPORT SpeexPreprocessState *speex_preprocess_state_init(int frame_size, int sampling_rate)
 {
    int i;
    int N, N3, N4, M;
 
    SpeexPreprocessState *st = (SpeexPreprocessState *)speex_alloc(sizeof(SpeexPreprocessState));
+#ifdef PREPROC_RVV_RUNTIME
+   preproc_detect_rvv();
+#endif
    st->frame_size = frame_size;
 
    /* Round ps_size down to the nearest power of two */
@@ -630,8 +856,7 @@ static void preprocess_analysis(SpeexPreprocessState *st, spx_int16_t *x)
       st->inbuf[i]=x[N4+i];
 
    /* Windowing */
-   for (i=0;i<2*N;i++)
-      st->frame[i] = MULT16_16_Q15(st->frame[i], st->window[i]);
+   preproc_window(st->frame, st->window, 2*N);
 
 #ifdef FIXED_POINT
    {
@@ -648,9 +873,7 @@ static void preprocess_analysis(SpeexPreprocessState *st, spx_int16_t *x)
    spx_fft(st->fft_lookup, st->frame, st->ft);
 
    /* Power spectrum */
-   ps[0]=MULT16_16(st->ft[0],st->ft[0]);
-   for (i=1;i<N;i++)
-      ps[i]=MULT16_16(st->ft[2*i-1],st->ft[2*i-1]) + MULT16_16(st->ft[2*i],st->ft[2*i]);
+   preproc_power_spectrum(st->ft, ps, N);
    for (i=0;i<N;i++)
       st->ps[i] = PSHR32(st->ps[i], 2*st->frame_shift);
 
@@ -663,11 +886,7 @@ static void update_noise_prob(SpeexPreprocessState *st)
    int min_range;
    int N = st->ps_size;
 
-   for (i=1;i<N-1;i++)
-      st->S[i] =  MULT16_32_Q15(QCONST16(.8f,15),st->S[i]) + MULT16_32_Q15(QCONST16(.05f,15),st->ps[i-1])
-                      + MULT16_32_Q15(QCONST16(.1f,15),st->ps[i]) + MULT16_32_Q15(QCONST16(.05f,15),st->ps[i+1]);
-   st->S[0] =  MULT16_32_Q15(QCONST16(.8f,15),st->S[0]) + MULT16_32_Q15(QCONST16(.2f,15),st->ps[0]);
-   st->S[N-1] =  MULT16_32_Q15(QCONST16(.8f,15),st->S[N-1]) + MULT16_32_Q15(QCONST16(.2f,15),st->ps[N-1]);
+   preproc_smooth_spectrum(st->S, st->ps, N);
 
    if (st->nb_adapt==1)
    {
@@ -686,27 +905,11 @@ static void update_noise_prob(SpeexPreprocessState *st)
    if (st->min_count > min_range)
    {
       st->min_count = 0;
-      for (i=0;i<N;i++)
-      {
-         st->Smin[i] = MIN32(st->Stmp[i], st->S[i]);
-         st->Stmp[i] = st->S[i];
-      }
+      preproc_min_track_swap(st->Smin, st->Stmp, st->S, N);
    } else {
-      for (i=0;i<N;i++)
-      {
-         st->Smin[i] = MIN32(st->Smin[i], st->S[i]);
-         st->Stmp[i] = MIN32(st->Stmp[i], st->S[i]);
-      }
+      preproc_min_track(st->Smin, st->Stmp, st->S, N);
    }
-   for (i=0;i<N;i++)
-   {
-      if (MULT16_32_Q15(QCONST16(.4f,15),st->S[i]) > st->Smin[i])
-         st->update_prob[i] = 1;
-      else
-         st->update_prob[i] = 0;
-      /*fprintf (stderr, "%f ", st->S[i]/st->Smin[i]);*/
-      /*fprintf (stderr, "%f ", st->update_prob[i]);*/
-   }
+   preproc_update_prob(st->S, st->Smin, st->update_prob, N);
 
 }
 
@@ -772,11 +975,7 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
    */
 
    /* Update the noise estimate for the frequencies where it can be */
-   for (i=0;i<N;i++)
-   {
-      if (!st->update_prob[i] || st->ps[i] < PSHR32(st->noise[i], NOISE_SHIFT))
-         st->noise[i] = MAX32(EXTEND32(0),MULT16_32_Q15(beta_1,st->noise[i]) + MULT16_32_Q15(beta,SHL32(st->ps[i],NOISE_SHIFT)));
-   }
+   preproc_noise_update(st->update_prob, st->ps, st->noise, beta, beta_1, N);
    filterbank_compute_bank32(st->bank, st->noise, st->noise+N);
 
    /* Special case for first frame */
@@ -785,34 +984,12 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
          st->old_ps[i] = ps[i];
 
    /* Compute a posteriori SNR */
-   for (i=0;i<N+M;i++)
-   {
-      spx_word16_t gamma;
-
-      /* Total noise estimate including residual echo and reverberation */
-      spx_word32_t tot_noise = ADD32(ADD32(ADD32(EXTEND32(1), PSHR32(st->noise[i],NOISE_SHIFT)) , st->echo_noise[i]) , st->reverb_estimate[i]);
-
-      /* A posteriori SNR = ps/noise - 1*/
-      st->post[i] = SUB16(DIV32_16_Q8(ps[i],tot_noise), QCONST16(1.f,SNR_SHIFT));
-      st->post[i]=MIN16(st->post[i], QCONST16(100.f,SNR_SHIFT));
-
-      /* Computing update gamma = .1 + .9*(old/(old+noise))^2 */
-      gamma = QCONST16(.1f,15)+MULT16_16_Q15(QCONST16(.89f,15),SQR16_Q15(DIV32_16_Q15(st->old_ps[i],ADD32(st->old_ps[i],tot_noise))));
-
-      /* A priori SNR update = gamma*max(0,post) + (1-gamma)*old/noise */
-      st->prior[i] = EXTRACT16(PSHR32(ADD32(MULT16_16(gamma,MAX16(0,st->post[i])), MULT16_16(Q15_ONE-gamma,DIV32_16_Q8(st->old_ps[i],tot_noise))), 15));
-      st->prior[i]=MIN16(st->prior[i], QCONST16(100.f,SNR_SHIFT));
-   }
+   preproc_snr_update(ps, st->noise, st->echo_noise, st->reverb_estimate, st->old_ps, st->post, st->prior, N+M);
 
    /*print_vec(st->post, N+M, "");*/
 
    /* Recursive average of the a priori SNR. A bit smoothed for the psd components */
-   st->zeta[0] = PSHR32(ADD32(MULT16_16(QCONST16(.7f,15),st->zeta[0]), MULT16_16(QCONST16(.3f,15),st->prior[0])),15);
-   for (i=1;i<N-1;i++)
-      st->zeta[i] = PSHR32(ADD32(ADD32(ADD32(MULT16_16(QCONST16(.7f,15),st->zeta[i]), MULT16_16(QCONST16(.15f,15),st->prior[i])),
-                           MULT16_16(QCONST16(.075f,15),st->prior[i-1])), MULT16_16(QCONST16(.075f,15),st->prior[i+1])),15);
-   for (i=N-1;i<N+M;i++)
-      st->zeta[i] = PSHR32(ADD32(MULT16_16(QCONST16(.7f,15),st->zeta[i]), MULT16_16(QCONST16(.3f,15),st->prior[i])),15);
+   preproc_zeta_smooth(st->zeta, st->prior, N, M);
 
    /* Speech probability of presence for the entire frame is based on the average filterbank a priori SNR */
    Zframe = 0;
@@ -874,49 +1051,7 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
       filterbank_compute_psd16(st->bank,st->gain_floor+N, st->gain_floor);
 
       /* Compute gain according to the Ephraim-Malah algorithm -- linear frequency */
-      for (i=0;i<N;i++)
-      {
-         spx_word32_t MM;
-         spx_word32_t theta;
-         spx_word16_t prior_ratio;
-         spx_word16_t tmp;
-         spx_word16_t p;
-         spx_word16_t g;
-
-         /* Wiener filter gain */
-         prior_ratio = PDIV32_16(SHL32(EXTEND32(st->prior[i]), 15), ADD16(st->prior[i], SHL32(1,SNR_SHIFT)));
-         theta = MULT16_32_P15(prior_ratio, QCONST32(1.f,EXPIN_SHIFT)+SHL32(EXTEND32(st->post[i]),EXPIN_SHIFT-SNR_SHIFT));
-
-         /* Optimal estimator for loudness domain */
-         MM = hypergeom_gain(theta);
-         /* EM gain with bound */
-         g = EXTRACT16(MIN32(Q15_ONE, MULT16_32_Q15(prior_ratio, MM)));
-         /* Interpolated speech probability of presence */
-         p = st->gain2[i];
-
-         /* Constrain the gain to be close to the Bark scale gain */
-         if (MULT16_16_Q15(QCONST16(.333f,15),g) > st->gain[i])
-            g = MULT16_16(3,st->gain[i]);
-         st->gain[i] = g;
-
-         /* Save old power spectrum */
-         st->old_ps[i] = MULT16_32_P15(QCONST16(.2f,15),st->old_ps[i]) + MULT16_32_P15(MULT16_16_P15(QCONST16(.8f,15),SQR16_Q15(st->gain[i])),ps[i]);
-
-         /* Apply gain floor */
-         if (st->gain[i] < st->gain_floor[i])
-            st->gain[i] = st->gain_floor[i];
-
-         /* Exponential decay model for reverberation (unused) */
-         /*st->reverb_estimate[i] = st->reverb_decay*st->reverb_estimate[i] + st->reverb_decay*st->reverb_level*st->gain[i]*st->gain[i]*st->ps[i];*/
-
-         /* Take into account speech probability of presence (loudness domain MMSE estimator) */
-         /* gain2 = [p*sqrt(gain)+(1-p)*sqrt(gain _floor) ]^2 */
-         tmp = MULT16_16_P15(p,spx_sqrt(SHL32(EXTEND32(st->gain[i]),15))) + MULT16_16_P15(SUB16(Q15_ONE,p),spx_sqrt(SHL32(EXTEND32(st->gain_floor[i]),15)));
-         st->gain2[i]=SQR16_Q15(tmp);
-
-         /* Use this if you want a log-domain MMSE estimator instead */
-         /*st->gain2[i] = pow(st->gain[i], p) * pow(st->gain_floor[i],1.f-p);*/
-      }
+      preproc_em_gain(st->prior, st->post, ps, st->gain_floor, st->gain, st->gain2, st->old_ps, N);
    } else {
       for (i=N;i<N+M;i++)
       {
@@ -937,13 +1072,7 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
    }
 
    /* Apply computed gain */
-   for (i=1;i<N;i++)
-   {
-      st->ft[2*i-1] = MULT16_16_P15(st->gain2[i],st->ft[2*i-1]);
-      st->ft[2*i] = MULT16_16_P15(st->gain2[i],st->ft[2*i]);
-   }
-   st->ft[0] = MULT16_16_P15(st->gain2[0],st->ft[0]);
-   st->ft[2*N-1] = MULT16_16_P15(st->gain2[N-1],st->ft[2*N-1]);
+   preproc_apply_gain(st->gain2, st->ft, N);
 
    /*FIXME: This *will* not work for fixed-point */
 #ifndef FIXED_POINT
@@ -975,8 +1104,7 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
 #endif
 
    /* Synthesis window (for WOLA) */
-   for (i=0;i<2*N;i++)
-      st->frame[i] = MULT16_16_Q15(st->frame[i], st->window[i]);
+   preproc_window(st->frame, st->window, 2*N);
 
    /* Perform overlap and add */
    for (i=0;i<N3;i++)
