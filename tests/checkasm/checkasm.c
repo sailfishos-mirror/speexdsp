@@ -18,6 +18,9 @@ static const CheckasmTest tests[] = {
     /* unit micro-benchmarks of the MDF echo canceller spectral kernels */
     { "mdf_kernels", checkasm_check_mdf_kernels },
 
+    /* unit micro-benchmarks of the preprocessor (denoiser) per-bin kernels */
+    { "preproc_kernels", checkasm_check_preproc_kernels },
+
     /* per-stage micro-benchmarks of the smallft radix stages */
     { "smallft_stage", checkasm_check_smallft_stage },
 

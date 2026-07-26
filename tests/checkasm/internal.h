@@ -24,6 +24,7 @@ void checkasm_check_resample_process(void);
 void checkasm_check_fft_bfly(void);
 void checkasm_check_fft_transform(void);
 void checkasm_check_mdf_kernels(void);
+void checkasm_check_preproc_kernels(void);
 void checkasm_check_smallft_stage(void);
 void checkasm_check_smallft_transform(void);
 void checkasm_check_fftwrap_scale(void);
