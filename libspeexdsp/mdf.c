@@ -836,14 +836,11 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
       }
    }
 
+   /* Shift memory: the per-(block, speaker) copies tile the whole
+      [1..M]*N*K region, so they collapse into one overlapping block copy */
+   SPEEX_MOVE(&st->X[N*K], st->X, M*N*K);
    for (speak = 0; speak < K; speak++)
    {
-      /* Shift memory: this could be optimized eventually*/
-      for (j=M-1;j>=0;j--)
-      {
-         for (i=0;i<N;i++)
-            st->X[(j+1)*N*K+speak*N+i] = st->X[j*N*K+speak*N+i];
-      }
       /* Convert x (echo input) to frequency domain */
       spx_fft(st->fft_table, st->x+speak*N, &st->X[speak*N]);
    }
