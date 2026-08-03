@@ -326,6 +326,46 @@ static void test_mdf_res_scale(void)
     checkasm_report("mdf_res_scale");
 }
 
+/* The weight update W[block] += PHI: one add per element in both builds
+ * (wrapping int32 in fixed, in-order vfadd in float), so C and RVV must
+ * match bit for bit. */
+static void test_mdf_weight_update(void)
+{
+    checkasm_declare(void, spx_word32_t *, const spx_word32_t *, int);
+
+    static const int lens[] = { 4, 65, 129, 256, 512 };
+    CHECKASM_ALIGN(spx_word32_t w_base[512]);
+    CHECKASM_ALIGN(spx_word32_t w_ref[512]);
+    CHECKASM_ALIGN(spx_word32_t w_new[512]);
+    CHECKASM_ALIGN(spx_word32_t phi[512]);
+
+    for (size_t c = 0; c < sizeof(lens) / sizeof(lens[0]); c++) {
+        const int N = lens[c];
+
+        mdf_fill_w32(w_base, N);
+        mdf_fill_w32(phi, N);
+
+        if (checkasm_check_func(mdf_weight_update_c, "mdf_weight_update_%d", N)) {
+            memcpy(w_new, w_base, N * sizeof *w_new);
+            checkasm_bench_new(w_new, phi, N);
+        }
+
+        if (active_flags & SPEEXDSP_CPU_FLAG_RVV) {
+            if (checkasm_check_func(mdf_weight_update_rvv, "mdf_weight_update_%d", N)) {
+                memcpy(w_ref, w_base, N * sizeof *w_ref);
+                memcpy(w_new, w_base, N * sizeof *w_new);
+                checkasm_call_ref(w_ref, phi, N);
+                checkasm_call_new(w_new, phi, N);
+                if (!mdf_buf32_matches(w_ref, w_new, N, 0.0))
+                    checkasm_fail();
+                checkasm_bench_new(w_new, phi, N);
+            }
+        }
+    }
+
+    checkasm_report("mdf_weight_update");
+}
+
 #endif /* HAVE_RVV_MDF */
 
 void checkasm_check_mdf_kernels(void)
@@ -342,5 +382,6 @@ void checkasm_check_mdf_kernels(void)
     test_mdf_adjust_prop();
     test_mdf_res_window();
     test_mdf_res_scale();
+    test_mdf_weight_update();
 #endif /* HAVE_RVV_MDF */
 }

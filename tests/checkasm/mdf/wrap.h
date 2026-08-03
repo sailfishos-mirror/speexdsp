@@ -40,6 +40,7 @@ void mdf_res_window_c(spx_word16_t *y, const spx_word16_t *window,
                       const spx_word16_t *last_y, int N);
 /* leak2 by pointer, same convention as wsmul's p */
 void mdf_res_scale_c(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len);
+void mdf_weight_update_c(spx_word32_t *w, const spx_word32_t *phi, int N);
 
 #ifdef HAVE_RVV_MDF
 void mdf_smul_accum_rvv(const spx_word16_t *X, const spx_word32_t *Y,
@@ -57,6 +58,7 @@ void mdf_adjust_prop_rvv(const spx_word32_t *W, int N, int M, int P,
 void mdf_res_window_rvv(spx_word16_t *y, const spx_word16_t *window,
                         const spx_word16_t *last_y, int N);
 void mdf_res_scale_rvv(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len);
+void mdf_weight_update_rvv(spx_word32_t *w, const spx_word32_t *phi, int N);
 #endif
 
 /* ------------- Test-input fill ------------- */

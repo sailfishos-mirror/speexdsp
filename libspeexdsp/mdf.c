@@ -404,6 +404,16 @@ static inline void weighted_spectral_mul_conj(const spx_float_t *w, const spx_fl
 }
 #endif
 
+/** Add the weight gradient to one block of the adaptive filter */
+#ifndef OVERRIDE_MDF_WEIGHT_UPDATE
+static inline void mdf_weight_update(spx_word32_t *w, const spx_word32_t *phi, int N)
+{
+   int i;
+   for (i=0;i<N;i++)
+      w[i] += phi[i];
+}
+#endif
+
 #ifndef OVERRIDE_MDF_ADJUST_PROP
 static inline void mdf_adjust_prop(const spx_word32_t *W, int N, int M, int P, spx_word16_t *prop)
 {
@@ -879,8 +889,7 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
             for (j=M-1;j>=0;j--)
             {
                weighted_spectral_mul_conj(st->power_1, FLOAT_SHL(PSEUDOFLOAT(st->prop[j]),-15), &st->X[(j+1)*N*K+speak*N], st->E+chan*N, st->PHI, N);
-               for (i=0;i<N;i++)
-                  st->W[chan*N*K*M + j*N*K + speak*N + i] += st->PHI[i];
+               mdf_weight_update(&st->W[chan*N*K*M + j*N*K + speak*N], st->PHI, N);
             }
          }
       }

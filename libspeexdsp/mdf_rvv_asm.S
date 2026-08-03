@@ -546,6 +546,44 @@ spx_mdf_rvv_res_scale_i32:
     ret
     .size spx_mdf_rvv_res_scale_i32, . - spx_mdf_rvv_res_scale_i32
 
+/* ================================================================== */
+/*                 adaptive-filter weight update kernels              */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* w[i] += phi[i] over one N-element filter block, 32-bit elements.
+ * Fixed point: wrapping vadd == the C int32 +=. Float: one vfadd per
+ * element in order, so it rounds identically to the scalar loop.
+ * Bit-exact in both builds. */
+.macro mdf_weight_update name, isfloat
+    .balign 4
+    .globl  \name
+    .hidden \name
+    .type   \name, @function
+\name:
+1:  vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a0)
+    vle32.v v16, (a1)
+.if \isfloat
+    vfadd.vv v8, v8, v16
+.else
+    vadd.vv v8, v8, v16
+.endif
+    vse32.v v8, (a0)
+    sub     a2, a2, t0
+    slli    t1, t0, 2
+    add     a0, a0, t1
+    add     a1, a1, t1
+    bnez    a2, 1b
+    ret
+    .size \name, . - \name
+.endm
+
+/* void spx_mdf_rvv_weight_update_f32(float *w, const float *phi, int N) */
+mdf_weight_update spx_mdf_rvv_weight_update_f32, 1
+/* void spx_mdf_rvv_weight_update_i32(spx_int32_t *w, const spx_int32_t *phi, int N) */
+mdf_weight_update spx_mdf_rvv_weight_update_i32, 0
+
 #if defined(__ELF__)
 /* Non-executable stack note */
     .section .note.GNU-stack, "", @progbits

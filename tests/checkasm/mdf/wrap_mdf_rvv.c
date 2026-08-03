@@ -65,4 +65,9 @@ void mdf_res_scale_rvv(spx_word32_t *residual_echo, const spx_word16_t *leak2, i
     mdf_residual_scale(residual_echo, *leak2, len);
 }
 
+void mdf_weight_update_rvv(spx_word32_t *w, const spx_word32_t *phi, int N)
+{
+    mdf_weight_update(w, phi, N);
+}
+
 #endif /* HAVE_RVV_MDF */
