@@ -75,8 +75,11 @@ if host_cpu_family in ['x86', 'x86_64'] and get_option('sse').allowed()
                       return 0;
                     }
                  '''
-  # Intrinsics arguments are not available with MSVC-like compilers
-  intrin_args = cc.get_argument_syntax() == 'msvc' ? [] : ['-msse']
+  # Probe with the flags the code is actually built with: nothing is added to
+  # the real compile lines, so probing with -msse would enable SSE on targets
+  # (e.g. i686) that then fail to build.  -Werror=psabi keeps GCC from
+  # accepting the intrinsics as emulated generic vectors when SSE is off.
+  intrin_args = cc.get_argument_syntax() == 'msvc' ? [] : ['-Werror=psabi']
   if cc.links(intrin_check, name: 'Compiler supports SSE intrinsics', args: intrin_args)
     has_sse = true
   endif
@@ -102,8 +105,8 @@ if host_cpu_family in ['x86', 'x86_64'] and get_option('sse2').allowed()
                       return 0;
                     }
                  '''
-  # Intrinsics arguments are not available with MSVC-like compilers
-  intrin_args = cc.get_argument_syntax() == 'msvc' ? [] : ['-msse2']
+  # See the SSE probe above: no -msse2, the flags must match the real build.
+  intrin_args = cc.get_argument_syntax() == 'msvc' ? [] : ['-Werror=psabi']
   if cc.links(intrin_check, name: 'Compiler supports SSE2 intrinsics', args: intrin_args)
     has_sse2 = true
   endif
