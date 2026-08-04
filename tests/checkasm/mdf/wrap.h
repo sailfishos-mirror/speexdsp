@@ -41,6 +41,10 @@ void mdf_res_window_c(spx_word16_t *y, const spx_word16_t *window,
 /* leak2 by pointer, same convention as wsmul's p */
 void mdf_res_scale_c(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len);
 void mdf_weight_update_c(spx_word32_t *w, const spx_word32_t *phi, int N);
+/* preemph/mem by pointer, same convention; returns the final mem */
+spx_word16_t mdf_deemph_output_c(spx_int16_t *out, const spx_word16_t *input,
+                                 const spx_word16_t *e, const spx_word16_t *preemph,
+                                 const spx_word16_t *mem, int len, int stride);
 
 #ifdef HAVE_RVV_MDF
 void mdf_smul_accum_rvv(const spx_word16_t *X, const spx_word32_t *Y,
@@ -59,6 +63,9 @@ void mdf_res_window_rvv(spx_word16_t *y, const spx_word16_t *window,
                         const spx_word16_t *last_y, int N);
 void mdf_res_scale_rvv(spx_word32_t *residual_echo, const spx_word16_t *leak2, int len);
 void mdf_weight_update_rvv(spx_word32_t *w, const spx_word32_t *phi, int N);
+spx_word16_t mdf_deemph_output_rvv(spx_int16_t *out, const spx_word16_t *input,
+                                   const spx_word16_t *e, const spx_word16_t *preemph,
+                                   const spx_word16_t *mem, int len, int stride);
 #endif
 
 /* ------------- Test-input fill ------------- */
@@ -91,6 +98,20 @@ static inline void mdf_fill_w32(spx_word32_t *buf, int n)
  * adds commute), so any difference is a real bug -> bit-exact. Float: the
  * kernels use FMAs and reordered sums -> compare relative to the buffer
  * peak. */
+/* The int16 output of mdf_deemph_output is bit-exact in both builds (the
+ * float WORD2INT kernel replicates floor(.5+x) exactly). */
+static inline int mdf_buf_i16_exact(const spx_int16_t *ref, const spx_int16_t *res, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (ref[i] != res[i]) {
+            fprintf(stderr, "FAILED: [%d] ref=%d res=%d (bit-exact required)\n",
+                    i, (int) ref[i], (int) res[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 #define MDF_SMUL_F32_REL_TOL  1e-5
 #define MDF_WSMUL_F32_REL_TOL 1e-5
 #define MDF_PS_F32_REL_TOL    1e-6

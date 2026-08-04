@@ -293,6 +293,8 @@ static inline void mdf_adjust_prop(const spx_word32_t *W, int N, int M, int P, s
 
 #else /* FLOATING_POINT && __riscv_float_abi_double */
 
+void  spx_mdf_rvv_word2int_f32(spx_int16_t *out, const float *in, int len,
+                               int stride);
 void  spx_mdf_rvv_smul_accum_f32(const float *X, const float *Y, float *acc,
                                  int N, int M);
 void  spx_mdf_rvv_wsmul_conj_f32(const float *w, const float *X, const float *Y,
@@ -316,6 +318,49 @@ static inline void mdf_weight_update(spx_word32_t *w, const spx_word32_t *phi, i
    }
    for (i=0;i<N;i++)
       w[i] += phi[i];
+}
+
+/* Float only (no fixed-point twin): the fixed WORD2INT is a cheap branchy
+ * clamp, but the float one calls floor() per sample. The de-emphasis
+ * recurrence itself is serial (each tmp_out feeds the next through mem),
+ * so it stays scalar; the recurrence runs in chunks through a small
+ * buffer and the RVV kernel batch-converts each chunk. The chunked C
+ * statements match the scalar fallback's exactly, and the kernel is
+ * bit-exact vs WORD2INT (proven exhaustively over all floats), so RVV
+ * output matches C bit for bit. */
+#define OVERRIDE_MDF_DEEMPH_OUTPUT
+static inline spx_word16_t mdf_deemph_output(spx_int16_t *out, const spx_word16_t *input, const spx_word16_t *e, spx_word16_t preemph, spx_word16_t mem, int len, int stride)
+{
+   int i;
+   if (SPX_MDF_RVV_ON && len >= 8)
+   {
+      float tmp[256];
+      while (len > 0)
+      {
+         int n = len < 256 ? len : 256;
+         for (i=0;i<n;i++)
+         {
+            spx_word32_t tmp_out = SUB32(EXTEND32(input[i]), EXTEND32(e[i]));
+            tmp_out = ADD32(tmp_out, EXTEND32(MULT16_16_P15(preemph, mem)));
+            tmp[i] = tmp_out;
+            mem = tmp_out;
+         }
+         spx_mdf_rvv_word2int_f32(out, tmp, n, stride);
+         input += n;
+         e += n;
+         out += n*stride;
+         len -= n;
+      }
+      return mem;
+   }
+   for (i=0;i<len;i++)
+   {
+      spx_word32_t tmp_out = SUB32(EXTEND32(input[i]), EXTEND32(e[i]));
+      tmp_out = ADD32(tmp_out, EXTEND32(MULT16_16_P15(preemph, mem)));
+      out[i*stride] = WORD2INT(tmp_out);
+      mem = tmp_out;
+   }
+   return mem;
 }
 
 #define OVERRIDE_MDF_SPECTRAL_MUL_ACCUM

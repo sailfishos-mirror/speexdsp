@@ -366,6 +366,78 @@ static void test_mdf_weight_update(void)
     checkasm_report("mdf_weight_update");
 }
 
+#ifndef FIXED_POINT
+/* The de-emphasized int16 output: the recurrence is scalar either way,
+ * but the RVV path batch-converts with the frm=RDN WORD2INT kernel,
+ * which must replicate floor(.5+x) bit for bit -- clamps, interior and
+ * ties included. The "ties" configs feed exact multiples of 0.5 through
+ * a zeroed recurrence (preemph = 0, e = 0) so every floor tie is hit. */
+static void test_mdf_deemph_output(void)
+{
+    checkasm_declare(spx_word16_t, spx_int16_t *, const spx_word16_t *,
+                     const spx_word16_t *, const spx_word16_t *,
+                     const spx_word16_t *, int, int);
+
+    static const struct { int len, stride, ties; } configs[] = {
+        { 8, 1, 0 }, { 128, 1, 0 }, { 250, 1, 0 }, { 512, 1, 0 },
+        { 128, 2, 0 }, { 256, 1, 1 }, { 512, 1, 1 },
+    };
+    CHECKASM_ALIGN(spx_word16_t input[512]);
+    CHECKASM_ALIGN(spx_word16_t e[512]);
+    CHECKASM_ALIGN(spx_int16_t out_ref[1024]);
+    CHECKASM_ALIGN(spx_int16_t out_new[1024]);
+    spx_word16_t preemph, mem0;
+
+    for (size_t c = 0; c < sizeof(configs) / sizeof(configs[0]); c++) {
+        const int len = configs[c].len, stride = configs[c].stride;
+        int i;
+
+        if (configs[c].ties) {
+            /* exact half-integers pass through untouched */
+            for (i = 0; i < len; i++) {
+                input[i] = (float)((int)(checkasm_rand() % 131072) - 65536) * 0.5f;
+                e[i] = 0.0f;
+            }
+            preemph = 0.0f;
+            mem0 = 0.0f;
+        } else {
+            /* +-8000 inputs; the preemph=.9 recurrence amplifies mem to
+             * ~+-50000 peaks, exercising clamps and interior together */
+            mdf_fill_w16(input, len);
+            mdf_fill_w16(e, len);
+            for (i = 0; i < len; i++) {
+                input[i] *= 8000.0f;
+                e[i] *= 8000.0f;
+            }
+            preemph = 0.9f;
+            mem0 = 123.25f;
+        }
+        /* same garbage in both outputs: untouched gap lanes (stride > 1)
+         * must stay identical, a clobbered or skipped lane is caught */
+        checkasm_init(out_ref, sizeof out_ref);
+        memcpy(out_new, out_ref, sizeof out_new);
+
+        if (checkasm_check_func(mdf_deemph_output_c, "mdf_deemph_output_%d_s%d%s",
+                                len, stride, configs[c].ties ? "_ties" : ""))
+            checkasm_bench_new(out_new, input, e, &preemph, &mem0, len, stride);
+
+        if (active_flags & SPEEXDSP_CPU_FLAG_RVV) {
+            if (checkasm_check_func(mdf_deemph_output_rvv, "mdf_deemph_output_%d_s%d%s",
+                                    len, stride, configs[c].ties ? "_ties" : "")) {
+                spx_word16_t mem_ref = checkasm_call_ref(out_ref, input, e, &preemph, &mem0, len, stride);
+                spx_word16_t mem_new = checkasm_call_new(out_new, input, e, &preemph, &mem0, len, stride);
+                if (!mdf_buf_i16_exact(out_ref, out_new, len * stride) ||
+                    !mdf_scalar_matches(mem_ref, mem_new, 0.0))
+                    checkasm_fail();
+                checkasm_bench_new(out_new, input, e, &preemph, &mem0, len, stride);
+            }
+        }
+    }
+
+    checkasm_report("mdf_deemph_output");
+}
+#endif /* !FIXED_POINT */
+
 #endif /* HAVE_RVV_MDF */
 
 void checkasm_check_mdf_kernels(void)
@@ -383,5 +455,8 @@ void checkasm_check_mdf_kernels(void)
     test_mdf_res_window();
     test_mdf_res_scale();
     test_mdf_weight_update();
+#ifndef FIXED_POINT
+    test_mdf_deemph_output();
+#endif
 #endif /* HAVE_RVV_MDF */
 }

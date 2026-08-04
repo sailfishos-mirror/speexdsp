@@ -65,3 +65,10 @@ void mdf_weight_update_c(spx_word32_t *w, const spx_word32_t *phi, int N)
 {
     mdf_weight_update(w, phi, N);
 }
+
+spx_word16_t mdf_deemph_output_c(spx_int16_t *out, const spx_word16_t *input,
+                                 const spx_word16_t *e, const spx_word16_t *preemph,
+                                 const spx_word16_t *mem, int len, int stride)
+{
+    return mdf_deemph_output(out, input, e, *preemph, *mem, len, stride);
+}

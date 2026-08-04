@@ -448,6 +448,24 @@ static inline void mdf_adjust_prop(const spx_word32_t *W, int N, int M, int P, s
 }
 #endif
 
+/** De-emphasis on the error signal and conversion to the int16 output:
+    out[i*stride] = WORD2INT(input[i] - e[i] + preemph*mem), where mem carries
+    the (de-emphasized) previous output sample across calls */
+#ifndef OVERRIDE_MDF_DEEMPH_OUTPUT
+static inline spx_word16_t mdf_deemph_output(spx_int16_t *out, const spx_word16_t *input, const spx_word16_t *e, spx_word16_t preemph, spx_word16_t mem, int len, int stride)
+{
+   int i;
+   for (i=0;i<len;i++)
+   {
+      spx_word32_t tmp_out = SUB32(EXTEND32(input[i]), EXTEND32(e[i]));
+      tmp_out = ADD32(tmp_out, EXTEND32(MULT16_16_P15(preemph, mem)));
+      out[i*stride] = WORD2INT(tmp_out);
+      mem = tmp_out;
+   }
+   return mem;
+}
+#endif
+
 #ifdef DUMP_ECHO_CANCEL_DATA
 #include <stdio.h>
 static FILE *rFile=NULL, *pFile=NULL, *oFile=NULL;
@@ -1033,25 +1051,22 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
    Sey = Syy = Sdd = 0;
    for (chan = 0; chan < C; chan++)
    {
-      /* Compute error signal (for the output with de-emphasis) */
+      /* This is an arbitrary test for saturation in the microphone signal */
       for (i=0;i<st->frame_size;i++)
       {
-         spx_word32_t tmp_out;
-#ifdef TWO_PATH
-         tmp_out = SUB32(EXTEND32(st->input[chan*st->frame_size+i]), EXTEND32(st->e[chan*N+i+st->frame_size]));
-#else
-         tmp_out = SUB32(EXTEND32(st->input[chan*st->frame_size+i]), EXTEND32(st->y[chan*N+i+st->frame_size]));
-#endif
-         tmp_out = ADD32(tmp_out, EXTEND32(MULT16_16_P15(st->preemph, st->memE[chan])));
-      /* This is an arbitrary test for saturation in the microphone signal */
          if (in[i*C+chan] <= -32000 || in[i*C+chan] >= 32000)
          {
          if (st->saturated == 0)
             st->saturated = 1;
          }
-         out[i*C+chan] = WORD2INT(tmp_out);
-         st->memE[chan] = tmp_out;
       }
+
+      /* Compute error signal (for the output with de-emphasis) */
+#ifdef TWO_PATH
+      st->memE[chan] = mdf_deemph_output(out+chan, st->input+chan*st->frame_size, st->e+chan*N+st->frame_size, st->preemph, st->memE[chan], st->frame_size, C);
+#else
+      st->memE[chan] = mdf_deemph_output(out+chan, st->input+chan*st->frame_size, st->y+chan*N+st->frame_size, st->preemph, st->memE[chan], st->frame_size, C);
+#endif
 
 #ifdef DUMP_ECHO_CANCEL_DATA
       dump_audio(in, far_end, out, st->frame_size);

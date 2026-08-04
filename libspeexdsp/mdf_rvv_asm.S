@@ -584,6 +584,74 @@ mdf_weight_update spx_mdf_rvv_weight_update_f32, 1
 /* void spx_mdf_rvv_weight_update_i32(spx_int32_t *w, const spx_int32_t *phi, int N) */
 mdf_weight_update spx_mdf_rvv_weight_update_i32, 0
 
+/* ================================================================== */
+/*                 WORD2INT output conversion (float)                 */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* void spx_mdf_rvv_word2int_f32(spx_int16_t *out, const float *in,
+ *                               int len, int stride)
+ * out[i*stride] = WORD2INT(in[i]), bit for bit vs arch.h's float
+ * WORD2INT (x < -32767.5f ? -32768 : x > 32766.5f ? 32767
+ *           : floor(.5 + x)) without the per-sample libm floor():
+ * clamp to [-32768.0, 32766.5] (collapses the two compare branches --
+ * any x <= -32768 still floors to -32768, any x in (-32768, -32767.5)
+ * floors to -32768, and the upper clamp pins the else-branch maximum),
+ * then +0.5 and narrow-convert with frm=RDN so the convert IS floor().
+ * Rounding x+0.5 down can never cross an integer boundary (integers in
+ * range are exactly representable), so doing the +0.5 under RDN too is
+ * exact; equivalence verified exhaustively over all floats. The result
+ * fits int16 by construction, so the narrowing convert never
+ * saturates. */
+    .balign 4
+    .globl  spx_mdf_rvv_word2int_f32
+    .hidden spx_mdf_rvv_word2int_f32
+    .type   spx_mdf_rvv_word2int_f32, @function
+spx_mdf_rvv_word2int_f32:
+    li      t1, 0x46FFFD00         /* 32766.5f */
+    fmv.w.x fa0, t1
+    li      t1, 0xC7000000         /* -32768.0f */
+    fmv.w.x fa1, t1
+    li      t1, 0x3F000000         /* 0.5f */
+    fmv.w.x fa2, t1
+    fsrmi   t6, 2                  /* frm := RDN, save the caller's */
+    slli    a3, a3, 1              /* output byte stride */
+    li      t2, 2
+    bne     a3, t2, 3f             /* strided (multichannel) path */
+1:  vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a1)
+    vfmin.vf v8, v8, fa0
+    vfmax.vf v8, v8, fa1
+    vfadd.vf v8, v8, fa2
+    vsetvli zero, zero, e16, m4, ta, ma
+    vfncvt.x.f.w v16, v8           /* floor, exact int16 range */
+    vse16.v v16, (a0)
+    sub     a2, a2, t0
+    slli    t1, t0, 2
+    add     a1, a1, t1
+    slli    t1, t0, 1
+    add     a0, a0, t1
+    bnez    a2, 1b
+    fsrm    t6
+    ret
+3:  vsetvli t0, a2, e32, m8, ta, ma
+    vle32.v v8, (a1)
+    vfmin.vf v8, v8, fa0
+    vfmax.vf v8, v8, fa1
+    vfadd.vf v8, v8, fa2
+    vsetvli zero, zero, e16, m4, ta, ma
+    vfncvt.x.f.w v16, v8
+    vsse16.v v16, (a0), a3
+    sub     a2, a2, t0
+    slli    t1, t0, 2
+    add     a1, a1, t1
+    mul     t1, t0, a3
+    add     a0, a0, t1
+    bnez    a2, 3b
+    fsrm    t6
+    ret
+    .size spx_mdf_rvv_word2int_f32, . - spx_mdf_rvv_word2int_f32
+
 #if defined(__ELF__)
 /* Non-executable stack note */
     .section .note.GNU-stack, "", @progbits
