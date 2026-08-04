@@ -87,6 +87,8 @@ void spx_preproc_rvv_em_gain_f32(const float *prior, const float *post, const fl
                                  const float *gain_floor, float *gain, float *gain2,
                                  float *old_ps, int N);
 void spx_preproc_rvv_apply_gain_f32(const float *gain2, float *ft, int N);
+void spx_preproc_rvv_word2int_sum_f32(spx_int16_t *x, const float *a,
+                                      const float *b, int len);
 
 #define OVERRIDE_PREPROC_WINDOW
 static inline void preproc_window(spx_word16_t *frame, const spx_word16_t *window, int len)
@@ -294,6 +296,23 @@ static inline void preproc_apply_gain(const spx_word16_t *gain2, spx_word16_t *f
    }
    ft[0] = MULT16_16_P15(gain2[0],ft[0]);
    ft[2*N-1] = MULT16_16_P15(gain2[N-1],ft[2*N-1]);
+}
+
+/* Bit-exact vs the scalar loop: the kernel adds a+b under the ambient
+ * rounding mode (matching C's +), then reproduces WORD2INT's
+ * floor(.5+x) with a clamp and an frm=RDN add+convert (equivalence
+ * proven exhaustively over all floats). */
+#define OVERRIDE_PREPROC_OVERLAP_OUTPUT
+static inline void preproc_overlap_output(spx_int16_t *x, const spx_word16_t *outbuf, const spx_word16_t *frame, int len)
+{
+   int i;
+   if (SPX_PREPROC_RVV_ON && len >= 4)
+   {
+      spx_preproc_rvv_word2int_sum_f32(x, outbuf, frame, len);
+      return;
+   }
+   for (i=0;i<len;i++)
+      x[i] = WORD2INT(ADD32(EXTEND32(outbuf[i]), EXTEND32(frame[i])));
 }
 
 #endif /* !FIXED_POINT && __riscv_float_abi_double */

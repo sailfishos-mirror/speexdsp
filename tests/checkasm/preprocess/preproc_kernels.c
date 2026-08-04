@@ -435,6 +435,64 @@ static void test_preproc_apply_gain(void)
     checkasm_report("preproc_apply_gain");
 }
 
+/* The overlap-add int16 output: the RVV kernel adds under the ambient
+ * rounding mode and replicates WORD2INT's floor(.5+x) with an frm=RDN
+ * convert, so it must match the C loop bit for bit -- clamps, interior
+ * and ties included. The "ties" pass feeds exact multiples of 0.5 so
+ * every floor tie is hit. */
+static void test_preproc_overlap_output(void)
+{
+    checkasm_declare(void, spx_int16_t *, const float *, const float *, int);
+
+    CHECKASM_ALIGN(float outbuf[MAX_N]);
+    CHECKASM_ALIGN(float frame[MAX_N]);
+    CHECKASM_ALIGN(spx_int16_t x_ref[MAX_N]);
+    CHECKASM_ALIGN(spx_int16_t x_new[MAX_N]);
+
+    for (int ties = 0; ties <= 1; ties++) {
+        for (size_t c = 0; c < NUM_SIZES; c++) {
+            const int len = test_sizes[c];
+
+            if (ties) {
+                /* both terms exact multiples of 0.5: the sums stay exact
+                 * (well under 2^24), so every half-integer tie is hit */
+                for (int i = 0; i < len; i++) {
+                    outbuf[i] = (float)((int)(checkasm_rand() % 131072) - 65536) * 0.5f;
+                    frame[i]  = (float)((int)(checkasm_rand() % 65536) - 32768) * 0.5f;
+                }
+            } else {
+                /* +-40000 sums: clamps and interior together */
+                preproc_fill_signal(outbuf, len);
+                preproc_fill_signal(frame, len);
+                for (int i = 0; i < len; i++) {
+                    outbuf[i] *= 30000.0f;
+                    frame[i]  *= 10000.0f;
+                }
+            }
+            /* different garbage per output so a skipped lane is caught */
+            checkasm_init(x_ref, len * sizeof *x_ref);
+            checkasm_init(x_new, len * sizeof *x_new);
+
+            if (checkasm_check_func(preproc_overlap_output_c, "preproc_overlap_output_%d%s",
+                                    len, ties ? "_ties" : ""))
+                checkasm_bench_new(x_new, outbuf, frame, len);
+
+            if (active_flags & SPEEXDSP_CPU_FLAG_RVV) {
+                if (checkasm_check_func(preproc_overlap_output_rvv, "preproc_overlap_output_%d%s",
+                                        len, ties ? "_ties" : "")) {
+                    checkasm_call_ref(x_ref, outbuf, frame, len);
+                    checkasm_call_new(x_new, outbuf, frame, len);
+                    if (!preproc_buf_i16_exact(x_ref, x_new, len))
+                        checkasm_fail();
+                    checkasm_bench_new(x_new, outbuf, frame, len);
+                }
+            }
+        }
+    }
+
+    checkasm_report("preproc_overlap_output");
+}
+
 #endif /* !FIXED_POINT && HAVE_RVV_PREPROC */
 
 void checkasm_check_preproc_kernels(void)
@@ -450,5 +508,6 @@ void checkasm_check_preproc_kernels(void)
     test_preproc_zeta_smooth();
     test_preproc_em_gain();
     test_preproc_apply_gain();
+    test_preproc_overlap_output();
 #endif
 }

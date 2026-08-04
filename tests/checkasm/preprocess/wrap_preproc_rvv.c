@@ -74,4 +74,10 @@ void preproc_apply_gain_rvv(const float *gain2, float *ft, int N)
     preproc_apply_gain(gain2, ft, N);
 }
 
+void preproc_overlap_output_rvv(spx_int16_t *x, const float *outbuf,
+                                const float *frame, int len)
+{
+    preproc_overlap_output(x, outbuf, frame, len);
+}
+
 #endif /* HAVE_RVV_PREPROC */

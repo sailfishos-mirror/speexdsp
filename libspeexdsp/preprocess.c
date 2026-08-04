@@ -611,6 +611,16 @@ static inline void preproc_apply_gain(const spx_word16_t *gain2, spx_word16_t *f
 }
 #endif
 
+/** Overlap-add of the previous frame's tail and conversion to the int16 output */
+#ifndef OVERRIDE_PREPROC_OVERLAP_OUTPUT
+static inline void preproc_overlap_output(spx_int16_t *x, const spx_word16_t *outbuf, const spx_word16_t *frame, int len)
+{
+   int i;
+   for (i=0;i<len;i++)
+      x[i] = WORD2INT(ADD32(EXTEND32(outbuf[i]), EXTEND32(frame[i])));
+}
+#endif
+
 EXPORT SpeexPreprocessState *speex_preprocess_state_init(int frame_size, int sampling_rate)
 {
    int i;
@@ -1107,8 +1117,7 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
    preproc_window(st->frame, st->window, 2*N);
 
    /* Perform overlap and add */
-   for (i=0;i<N3;i++)
-      x[i] = WORD2INT(ADD32(EXTEND32(st->outbuf[i]), EXTEND32(st->frame[i])));
+   preproc_overlap_output(x, st->outbuf, st->frame, N3);
    for (i=0;i<N4;i++)
       x[N3+i] = st->frame[N3+i];
 

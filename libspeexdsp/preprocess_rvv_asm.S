@@ -523,6 +523,51 @@ spx_preproc_rvv_apply_gain_f32:
     .size spx_preproc_rvv_apply_gain_f32, . - spx_preproc_rvv_apply_gain_f32
 
 /* ------------------------------------------------------------------ */
+/* void spx_preproc_rvv_word2int_sum_f32(spx_int16_t *x, const float *a,
+ *                                       const float *b, int len)
+ * x[i] = WORD2INT(a[i] + b[i]) (the overlap-add output loop), bit for
+ * bit vs arch.h's float WORD2INT without the per-sample libm floor().
+ * The a+b add must round like the C '+', so it runs under the caller's
+ * rounding mode; only the +0.5 and the floor-convert run under RDN
+ * (rounding x+0.5 down never crosses an integer boundary, so RDN there
+ * is exact -- equivalence verified exhaustively over all floats), hence
+ * the frm save/restore inside the strip loop. The clamp to
+ * [-32768.0, 32766.5] collapses WORD2INT's two compare branches and
+ * keeps the narrowing convert inside int16 range (never saturates). */
+    .balign 4
+    .globl  spx_preproc_rvv_word2int_sum_f32
+    .hidden spx_preproc_rvv_word2int_sum_f32
+    .type   spx_preproc_rvv_word2int_sum_f32, @function
+spx_preproc_rvv_word2int_sum_f32:
+    li      t1, 0x46FFFD00         /* 32766.5f */
+    fmv.w.x fa0, t1
+    li      t1, 0xC7000000         /* -32768.0f */
+    fmv.w.x fa1, t1
+    li      t1, 0x3F000000         /* 0.5f */
+    fmv.w.x fa2, t1
+1:  vsetvli t0, a3, e32, m8, ta, ma
+    vle32.v v8, (a1)
+    vle32.v v16, (a2)
+    vfadd.vv v8, v8, v16           /* caller's frm, matches the C '+' */
+    vfmin.vf v8, v8, fa0
+    vfmax.vf v8, v8, fa1
+    fsrmi   t6, 2                  /* frm := RDN, save the caller's */
+    vfadd.vf v8, v8, fa2
+    vsetvli zero, zero, e16, m4, ta, ma
+    vfncvt.x.f.w v16, v8           /* floor, exact int16 range */
+    fsrm    t6
+    vse16.v v16, (a0)
+    sub     a3, a3, t0
+    slli    t1, t0, 2
+    add     a1, a1, t1
+    add     a2, a2, t1
+    slli    t1, t0, 1
+    add     a0, a0, t1
+    bnez    a3, 1b
+    ret
+    .size spx_preproc_rvv_word2int_sum_f32, . - spx_preproc_rvv_word2int_sum_f32
+
+/* ------------------------------------------------------------------ */
 /* hypergeom_gain interpolation table (preprocess.c), 21 floats. */
     .section .rodata
     .balign 4

@@ -44,6 +44,8 @@ void preproc_em_gain_c(const float *prior, const float *post, const float *ps,
                        const float *gain_floor, float *gain, float *gain2,
                        float *old_ps, int N);
 void preproc_apply_gain_c(const float *gain2, float *ft, int N);
+void preproc_overlap_output_c(spx_int16_t *x, const float *outbuf,
+                              const float *frame, int len);
 
 #ifdef HAVE_RVV_PREPROC
 void preproc_window_rvv(float *frame, const float *window, int len);
@@ -62,6 +64,8 @@ void preproc_em_gain_rvv(const float *prior, const float *post, const float *ps,
                          const float *gain_floor, float *gain, float *gain2,
                          float *old_ps, int N);
 void preproc_apply_gain_rvv(const float *gain2, float *ft, int N);
+void preproc_overlap_output_rvv(spx_int16_t *x, const float *outbuf,
+                                const float *frame, int len);
 #endif
 
 /* ------------- Test-input fill -------------
@@ -126,6 +130,20 @@ static inline int preproc_buf_within_tol(const float *ref, const float *res, int
             fprintf(stderr, "FAILED: [%d] ref=%g res=%g diff=%g peak=%g "
                     "rel=%.2e (tol %g)\n",
                     i, (double) ref[i], (double) res[i], diff, peak, rel, rel_tol);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The int16 output of preproc_overlap_output is bit-exact: the RVV
+ * WORD2INT kernel replicates floor(.5+x) exactly. */
+static inline int preproc_buf_i16_exact(const spx_int16_t *ref, const spx_int16_t *res, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (ref[i] != res[i]) {
+            fprintf(stderr, "FAILED: [%d] ref=%d res=%d (bit-exact required)\n",
+                    i, (int) ref[i], (int) res[i]);
             return 0;
         }
     }
