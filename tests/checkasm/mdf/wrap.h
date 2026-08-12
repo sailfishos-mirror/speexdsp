@@ -117,6 +117,7 @@ static inline int mdf_buf_i16_exact(const spx_int16_t *ref, const spx_int16_t *r
 #define MDF_PS_F32_REL_TOL    1e-6
 #define MDF_IP_F32_REL_TOL    1e-5
 #define MDF_PROP_F32_REL_TOL  1e-4
+#define MDF_ACC_F32_TOL       1e-6  /* of sum|terms|, not of the result */
 
 #ifdef FIXED_POINT
 #define mdf_buf16_matches(ref, res, n, tol) mdf_buf_bitexact_w16(ref, res, n)
@@ -143,8 +144,10 @@ static inline int mdf_buf_bitexact_w32(const spx_word32_t *ref, const spx_word32
     }
     return 1;
 }
-static inline int mdf_scalar_matches(spx_word32_t ref, spx_word32_t res, double tol)
+static inline int mdf_scalar_matches(spx_word32_t ref, spx_word32_t res,
+                                     double scale, double tol)
 {
+    (void) scale;
     (void) tol;
     if (ref != res) {
         fprintf(stderr, "FAILED: scalar ref=%ld res=%ld (bit-exact required)\n",
@@ -176,13 +179,17 @@ static inline int mdf_buf_within_tol(const float *ref, const float *res, int n, 
 }
 #define mdf_buf16_matches(ref, res, n, tol) mdf_buf_within_tol(ref, res, n, tol)
 #define mdf_buf32_matches(ref, res, n, tol) mdf_buf_within_tol(ref, res, n, tol)
-static inline int mdf_scalar_matches(spx_word32_t ref, spx_word32_t res, double rel_tol)
+/* rel_tol of the result plus MDF_ACC_F32_TOL of `scale`, the magnitude it was
+ * accumulated from (0 if the caller has none): a reduction whose terms cancel
+ * leaves a result too small to judge reassociated rounding against. */
+static inline int mdf_scalar_matches(spx_word32_t ref, spx_word32_t res,
+                                     double scale, double rel_tol)
 {
-    double diff = fabs((double) ref - (double) res);
-    double rel  = fabs((double) ref) > 0.0 ? diff / fabs((double) ref) : diff;
-    if (!(rel <= rel_tol)) {
-        fprintf(stderr, "FAILED: scalar ref=%g res=%g rel=%.2e (tol %g)\n",
-                (double) ref, (double) res, rel, rel_tol);
+    double diff  = fabs((double) ref - (double) res);
+    double limit = rel_tol * fabs((double) ref) + MDF_ACC_F32_TOL * scale;
+    if (!(diff <= limit)) {
+        fprintf(stderr, "FAILED: scalar ref=%g res=%g diff=%.2e (limit %.2e)\n",
+                (double) ref, (double) res, diff, limit);
         return 0;
     }
     return 1;

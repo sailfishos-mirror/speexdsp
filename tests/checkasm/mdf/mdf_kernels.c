@@ -197,7 +197,10 @@ static void test_mdf_inner_prod(void)
             if (checkasm_check_func(mdf_inner_prod_rvv, "mdf_inner_prod_%d", len)) {
                 spx_word32_t ref = checkasm_call_ref(x, y, len);
                 spx_word32_t res = checkasm_call_new(x, y, len);
-                if (!mdf_scalar_matches(ref, res, MDF_IP_F32_REL_TOL))
+                double scale = 0.0;
+                for (int i = 0; i < len; i++)
+                    scale += fabs((double) x[i] * (double) y[i]);
+                if (!mdf_scalar_matches(ref, res, scale, MDF_IP_F32_REL_TOL))
                     checkasm_fail();
                 checkasm_bench_new(x, y, len);
             }
@@ -427,7 +430,7 @@ static void test_mdf_deemph_output(void)
                 spx_word16_t mem_ref = checkasm_call_ref(out_ref, input, e, &preemph, &mem0, len, stride);
                 spx_word16_t mem_new = checkasm_call_new(out_new, input, e, &preemph, &mem0, len, stride);
                 if (!mdf_buf_i16_exact(out_ref, out_new, len * stride) ||
-                    !mdf_scalar_matches(mem_ref, mem_new, 0.0))
+                    !mdf_scalar_matches(mem_ref, mem_new, 0.0, 0.0))
                     checkasm_fail();
                 checkasm_bench_new(out_new, input, e, &preemph, &mem0, len, stride);
             }
